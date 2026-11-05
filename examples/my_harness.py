@@ -261,7 +261,7 @@ class MyHarness(Harness):
 
         return NoBroadcast()
 
-  def choose_action(self, broadcasts):
+      def choose_action(self, broadcasts):
         try:
             # Parse incoming teammate broadcasts to extract collaborative team intents
             self.team_intents.clear()
