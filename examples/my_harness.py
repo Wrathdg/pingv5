@@ -14,7 +14,6 @@ from harness_api.messages import (
     BroadcastMessage, EventAction, NoBroadcast, PlayerAction,
 )
 
-NETID = "am639"  
 
 # Seconds kept back from every window for overhead / network safety.
 SAFETY_SECONDS = 6
@@ -76,6 +75,7 @@ def _similar(a: str, b: str) -> float:
 
 
 class MyHarness(Harness):
+    NETID = "am639"  
     def __init__(self):
         super().__init__()
         self.llm = LLMClient()
