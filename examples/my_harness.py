@@ -160,31 +160,35 @@ class MyHarness(Harness):
         known = {s: self.stats.get(s, 50) for s in STATS}
         return max(known, key=known.get) if known else "strength"
 
-    def _is_nemesis(self) -> bool:
+def _is_nemesis(self) -> bool:
         if not self.nemesis_action or self.vendetta_done or not self.boss_desc or not self.nemesis_desc:
             return False
             
-        # Cached to avoid querying the LLM every single round for the same boss encounter
+        # Cached to avoid redundant queries during the same boss encounter
         if getattr(self, "_cached_boss_name", None) == self.boss_name:
             return getattr(self, "_cached_is_nemesis", False)
             
         self._cached_boss_name = self.boss_name
         
-        # Primary check: semantic LLM check with a tight timeout
+        # Primary check: Semantic LLM check with a safe 2.5s budget
         question = (
-            f"Does this boss description match your nemesis?\n"
-            f"Boss: {self.boss_desc}\n"
-            f"Nemesis: {self.nemesis_desc}"
+            f"Does this boss description match your target nemesis description?\n"
+            f"Boss Description: {self.boss_desc}\n"
+            f"Nemesis Description: {self.nemesis_desc}"
         )
         try:
-            res = self.llm.yes_no(question, timeout=2.0)
-            self._cached_is_nemesis = res
-            return res
+            res = self.llm.yes_no(question, timeout=2.5)
+            if res:
+                self._cached_is_nemesis = True
+                return True
         except Exception:
-            # Fallback to fast word overlap if LLM times out or errors
-            res = _similar(self.boss_desc, self.nemesis_desc) >= 0.4
-            self._cached_is_nemesis = res
-            return res
+            pass  # Fall back gracefully on timeout or network error
+
+        # Secondary safety net: Widened keyword overlap fallback (lowered from 0.4 to 0.28)
+        overlap_score = _similar(self.boss_desc, self.nemesis_desc)
+        res = overlap_score >= 0.28
+        self._cached_is_nemesis = res
+        return res
 
     def _evaluate_support_target(self) -> str | None:
         """
@@ -257,7 +261,7 @@ class MyHarness(Harness):
 
         return NoBroadcast()
 
-    def choose_action(self, broadcasts):
+  def choose_action(self, broadcasts):
         try:
             # Parse incoming teammate broadcasts to extract collaborative team intents
             self.team_intents.clear()
@@ -267,11 +271,26 @@ class MyHarness(Harness):
                 if sender and text:
                     self.team_intents[sender] = text
 
-            # Priority 1: Vendetta Completion
+            my_hp = self.stats.get('hp', 50)
+
+            # Priority 1: Vendetta Completion (Always highest priority when your nemesis appears)
             if self._is_nemesis():
                 return EventAction(action=_clip(self.nemesis_action))
 
-            # Priority 2: Proactive Risk-Aware Support Calculation
+            # Priority 2: Absolute Self-Preservation (If NOT doing a vendetta and HP is critical)
+            survival_danger_threshold = 42 if self.round >= 4 else 35
+            if my_hp < survival_danger_threshold:
+                defensive_prompt = (
+                    f"CRITICAL DANGER: Your HP is critically low ({my_hp}). "
+                    f"Scene: {self.scene_text}\n"
+                    f"Boss: {self.boss_name} - {_clip(self.boss_desc, 30)}\n"
+                    "You are facing imminent death. You must take an immediate defensive, evasive, "
+                    "or shielding action to protect your life. Do not attack; focus entirely on survival and defense."
+                )
+                defensive_fallback = "I dive behind heavy cover and erect a defensive barrier to shield myself from the boss's wrath."
+                return EventAction(action=self._gen(defensive_prompt, defensive_fallback))
+
+            # Priority 3: Proactive Risk-Aware Support Calculation (For teammates)
             target = self._evaluate_support_target()
             if target:
                 ability = CLASSES[self.my_class][1]
@@ -286,20 +305,19 @@ class MyHarness(Harness):
                 except Exception:
                     pass
 
-            # Priority 3: Stat-Maximized Environment Action with Narrative Lessons & Collaborative Hints
+            # Priority 4: Stat-Maximized Environment Action with Narrative Lessons & Collaborative Hints
             hints = " | ".join(f"{s}: {_clip(t, 25)}" for s, t in self.team_intents.items())[:400]
             lessons_text = " | ".join(self.boss_lessons[-2:]) if self.boss_lessons else "none"
             
             primary = self._primary()
             mod = self._modifier(primary)
-            hp = self.stats.get('hp', 50)
             
-            adaptive_tactic = "Play defensively and protect yourself." if hp < 30 or self.failed_streak > 0 else "Strike aggressively using peak stats."
+            adaptive_tactic = "Play defensively and protect yourself." if self.failed_streak > 0 else "Strike aggressively using peak stats."
 
             prompt = (
                 f"Environment Scene: {self.scene_text}\n"
                 f"Boss Encounter: {self.boss_name} - {_clip(self.boss_desc, 35)}\n"
-                f"My Role: {self.my_class} | Peak Stat: {primary} ({mod:+d}) | HP: {hp}\n"
+                f"My Role: {self.my_class} | Peak Stat: {primary} ({mod:+d}) | HP: {my_hp}\n"
                 f"Historical Boss Lessons: {lessons_text}\n"
                 f"Collaborative Team Intents: {hints or 'none'}\n"
                 f"Tactical Directive: {adaptive_tactic}\n"
