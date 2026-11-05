@@ -160,7 +160,7 @@ class MyHarness(Harness):
         known = {s: self.stats.get(s, 50) for s in STATS}
         return max(known, key=known.get) if known else "strength"
 
-def _is_nemesis(self) -> bool:
+    def _is_nemesis(self) -> bool:
         if not self.nemesis_action or self.vendetta_done or not self.boss_desc or not self.nemesis_desc:
             return False
             
