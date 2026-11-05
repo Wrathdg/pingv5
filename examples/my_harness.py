@@ -1,5 +1,5 @@
-"""Ping - Dungeons and Dragons Championship Harness with Advanced Collaborative AI, 
-Narrative Boss Learning, Proactive Survival, and Stat Maximizer.
+"""Ping - Dungeons and Dragons Championship Harness with Dynamic Priority-Flipping, 
+Round-Agnostic Dynamic Scaling, Adaptive LLM Temperature, and Stat Maximizer.
 
 Test:        pytest test_my_harness.py
 Self-check:  uv run ping-check my_harness.py
@@ -13,7 +13,6 @@ from harness_api import Harness, LLMClient, limits
 from harness_api.messages import (
     BroadcastMessage, EventAction, NoBroadcast, PlayerAction,
 )
-
 
 # Seconds kept back from every window for overhead / network safety.
 SAFETY_SECONDS = 6
@@ -75,7 +74,8 @@ def _similar(a: str, b: str) -> float:
 
 
 class MyHarness(Harness):
-    NETID = "am639"  
+    NETID = "am639"  # Declared as a class-level attribute for framework static validation
+
     def __init__(self):
         super().__init__()
         self.llm = LLMClient()
@@ -96,8 +96,8 @@ class MyHarness(Harness):
         # Advanced Campaign & Learning Memory
         self.failed_streak = 0
         self.last_action_result = "success"
-        self.boss_lessons = []    # Historical narrative feedback (e.g., resistance/immunity warnings)
-        self.team_intents = {}    # Stores what teammates broadcasted they are doing
+        self.boss_lessons = []    # Historical narrative feedback
+        self.team_intents = {}    # Stores teammate broadcasts
         self.notes = []
 
     # ------------------------------------------------------------ state & stat maximizer
@@ -184,30 +184,29 @@ class MyHarness(Harness):
         except Exception:
             pass  # Fall back gracefully on timeout or network error
 
-        # Secondary safety net: Widened keyword overlap fallback (lowered from 0.4 to 0.28)
+        # Secondary safety net: Widened keyword overlap fallback (0.28)
         overlap_score = _similar(self.boss_desc, self.nemesis_desc)
         res = overlap_score >= 0.28
         self._cached_is_nemesis = res
         return res
 
     def _evaluate_support_target(self) -> str | None:
-        """
-        Proactive Survival & Stat Maximization Support Calculator.
-        Scales emergency threshold dynamically based on round progression.
-        """
+        """Proactive Survival & Stat Maximization Support Calculator with robust team stats lookup safeguard."""
         if self.my_class not in CLASSES:
             return None
         
         raised_stat = CLASSES[self.my_class][2]
 
-        # 1. PROACTIVE SURVIVAL EMERGENCY PRIORITY: 
-        emergency_threshold = 45 if self.round >= 4 else (35 if self.round >= 2 else 25)
+        # Round-agnostic dynamic emergency threshold scaling
+        emergency_threshold = min(48, 25 + int(self.round * 3))
 
         critical_teammate = None
         lowest_hp = 100
         for c in self.others:
             if c in CLASSES and c not in self.dead:
-                hp = self.team_stats.get(c, {}).get("hp", 50)
+                player_data = self.team_stats.get(c, {})
+                hp = player_data.get("hp", 50) if isinstance(player_data, dict) else 50
+                
                 if hp < emergency_threshold and hp < lowest_hp:
                     lowest_hp = hp
                     critical_teammate = c
@@ -215,21 +214,27 @@ class MyHarness(Harness):
         if critical_teammate:
             return critical_teammate
 
-        # 2. STAT MAXIMIZATION & SYNERGY PRIORITY: Normal rounds
+        # STAT MAXIMIZATION & SYNERGY PRIORITY
         for c in self.others:
             if c in CLASSES and c not in self.dead:
                 if CLASSES[c][0] == raised_stat:
                     return c
         return None
 
-    def _gen(self, prompt: str, fallback: str) -> str:
+    def _gen(self, prompt: str, fallback: str, temperature: float = 0.5) -> str:
+        """Adaptive LLM Generation with dynamic temperature control."""
         budget = limits.ACTION_SECONDS - SAFETY_SECONDS
         try:
-            out = self.llm.short_text(prompt, max_chars=300, system=self.role_prompt, timeout=budget)
+            out = self.llm.short_text(prompt, max_chars=300, system=self.role_prompt, timeout=budget, temperature=temperature)
             if isinstance(out, str) and out.strip():
                 return _clip(out)
         except Exception:
-            pass
+            try:
+                out = self.llm.short_text(prompt, max_chars=300, system=self.role_prompt, timeout=budget)
+                if isinstance(out, str) and out.strip():
+                    return _clip(out)
+            except Exception:
+                pass
         return fallback
 
     # ------------------------------------------------------------ lifecycle methods
@@ -261,9 +266,9 @@ class MyHarness(Harness):
 
         return NoBroadcast()
 
-      def choose_action(self, broadcasts):
+    def choose_action(self, broadcasts):
         try:
-            # Parse incoming teammate broadcasts to extract collaborative team intents
+            # Parse incoming teammate broadcasts
             self.team_intents.clear()
             for m in (_get(broadcasts, "messages") or []):
                 sender = str(_get(m, "from_", "") or _get(m, "sender", "ally"))
@@ -273,30 +278,43 @@ class MyHarness(Harness):
 
             my_hp = self.stats.get('hp', 50)
 
-            # Priority 1: Vendetta Completion (Always highest priority when your nemesis appears)
-            if self._is_nemesis():
+            # Round-agnostic dynamic survival threshold (scales upward as dungeon progresses)
+            survival_threshold = min(48, 25 + int(self.round * 3))
+
+            # EXTREME SAFETY NET: Absolute immediate survival if health is on the fatal brink (< 22 HP)
+            if my_hp < 22:
+                defensive_prompt = (
+                    f"IMMINENT DEATH WARNING (Round {self.round}): HP is critically low ({my_hp}). "
+                    f"Scene: {self.scene_text}\nBoss: {self.boss_name}\n"
+                    "Take immediate evasive or defensive action to stay alive. No attacks."
+                )
+                defensive_fallback = "I dive behind heavy cover and erect a defensive barrier to survive."
+                return EventAction(action=self._gen(defensive_prompt, defensive_fallback, temperature=0.1))
+
+            # DYNAMIC PRIORITY FLIP MECHANISM:
+            is_healthy_for_vendetta = my_hp >= survival_threshold
+
+            if is_healthy_for_vendetta and self._is_nemesis():
                 return EventAction(action=_clip(self.nemesis_action))
 
-            # Priority 2: Absolute Self-Preservation (If NOT doing a vendetta and HP is critical)
-            survival_danger_threshold = 42 if self.round >= 4 else 35
-            if my_hp < survival_danger_threshold:
+            if not is_healthy_for_vendetta:
                 defensive_prompt = (
-                    f"CRITICAL DANGER: Your HP is critically low ({my_hp}). "
-                    f"Scene: {self.scene_text}\n"
-                    f"Boss: {self.boss_name} - {_clip(self.boss_desc, 30)}\n"
-                    "You are facing imminent death. You must take an immediate defensive, evasive, "
-                    "or shielding action to protect your life. Do not attack; focus entirely on survival and defense."
+                    f"CRITICAL DANGER (Round {self.round}): HP is low ({my_hp}) relative to dungeon pressure. Boss: {self.boss_name}\n"
+                    "Focus entirely on defensive positioning and damage mitigation."
                 )
-                defensive_fallback = "I dive behind heavy cover and erect a defensive barrier to shield myself from the boss's wrath."
-                return EventAction(action=self._gen(defensive_prompt, defensive_fallback))
+                defensive_fallback = "I adopt a defensive posture, parrying incoming strikes while holding my ground."
+                return EventAction(action=self._gen(defensive_prompt, defensive_fallback, temperature=0.2))
+
+            # Fallback check for nemesis if health crossed threshold mid-check
+            if self._is_nemesis():
+                return EventAction(action=_clip(self.nemesis_action))
 
             # Priority 3: Proactive Risk-Aware Support Calculation (For teammates)
             target = self._evaluate_support_target()
             if target:
                 ability = CLASSES[self.my_class][1]
                 target_hp = self.team_stats.get(target, {}).get("hp", 50)
-                emergency_threshold = 45 if self.round >= 4 else 35
-                urgency_prefix = "Proactive emergency defense: " if target_hp < emergency_threshold else "Synergistic empowerment: "
+                urgency_prefix = "Proactive emergency defense: " if target_hp < 40 else "Synergistic empowerment: "
                 try:
                     return PlayerAction(
                         target_class=target,
@@ -305,27 +323,36 @@ class MyHarness(Harness):
                 except Exception:
                     pass
 
-            # Priority 4: Stat-Maximized Environment Action with Narrative Lessons & Collaborative Hints
+            # Priority 4: Dynamic State-Aware Stat-Maximized Action
             hints = " | ".join(f"{s}: {_clip(t, 25)}" for s, t in self.team_intents.items())[:400]
             lessons_text = " | ".join(self.boss_lessons[-2:]) if self.boss_lessons else "none"
-            
+
             primary = self._primary()
             mod = self._modifier(primary)
-            
-            adaptive_tactic = "Play defensively and protect yourself." if self.failed_streak > 0 else "Strike aggressively using peak stats."
+
+            if self.failed_streak > 0:
+                phase_tactic = "Recent setback detected. Play defensively and adapt your approach."
+                temp = 0.3
+            elif self.round >= 4:
+                phase_tactic = "Late-stage dungeon intensity. Strike decisively with maximum precision."
+                temp = 0.65
+            else:
+                phase_tactic = "Maintain momentum. Strike aggressively using peak stats."
+                temp = 0.55
 
             prompt = (
+                f"Dungeon Progression: Round {self.round}\n"
                 f"Environment Scene: {self.scene_text}\n"
-                f"Boss Encounter: {self.boss_name} - {_clip(self.boss_desc, 35)}\n"
+                f"Boss Encounter: {self.boss_name} - {_clip(self.boss_desc, 30)}\n"
                 f"My Role: {self.my_class} | Peak Stat: {primary} ({mod:+d}) | HP: {my_hp}\n"
                 f"Historical Boss Lessons: {lessons_text}\n"
                 f"Collaborative Team Intents: {hints or 'none'}\n"
-                f"Tactical Directive: {adaptive_tactic}\n"
+                f"Tactical Directive: {phase_tactic}\n"
                 "Execute single action:"
             )
             
-            fallback = f"I use my peak {primary} mastery (modifier {mod:+d}) to exploit a structural vulnerability in {self.boss_name or 'the boss'}."
-            return EventAction(action=self._gen(prompt, fallback))
+            fallback = f"I use my peak {primary} mastery (modifier {mod:+d}) to strike decisively against {self.boss_name or 'the boss'}."
+            return EventAction(action=self._gen(prompt, fallback, temperature=temp))
             
         except Exception:
             primary = self._primary()
@@ -353,7 +380,7 @@ class MyHarness(Harness):
                     if c_class == self.my_class and stat_name in self.stats:
                         self.stats[stat_name] += delta
 
-            # NARRATIVE BOSS LEARNING ENGINE: Extract resistance/immunity/failure cues from narrative
+            # NARRATIVE BOSS LEARNING ENGINE: Extract resistance/immunity/failure cues
             narrative = str(_get(resolution, "narrative", ""))
             narrative_lower = narrative.lower()
             if any(term in narrative_lower for term in ["immune", "resist", "ineffective", "fail", "bounce"]):
